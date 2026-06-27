@@ -4,11 +4,9 @@
 BLS12-381 **PLONK** prover, built on the MIT-licensed
 [open-icicle](https://github.com/ingonyama-zk/open-icicle) backend.
 
-It re-exports the exact `gpu_*` C-ABI that gnark-crypto's GPU seam binds, so the
-Go above the C boundary compiles unchanged — only the cgo flags and the `hip`
-build tag change. MSM and NTT are delegated to open-icicle; the bespoke PLONK
-kernels (constraint evaluation, grand-product, scatter, divide-by-Zh, fused FFT,
-coset NTT) live here.
+It exports a stable `gpu_*` C-ABI that the gnark fork binds via cgo. MSM and NTT
+are delegated to open-icicle; the bespoke PLONK kernels (constraint evaluation,
+grand-product, scatter, divide-by-Zh, fused FFT, coset NTT) live here.
 
 On an RTX 5090 (Blackwell, sm_120) the apk-proofs circuit (7,097,608 constraints)
 **proves and verifies in ~13.5 s** — ~7.3× the ~98 s CPU baseline — with the
@@ -41,10 +39,36 @@ cmake --build build -j
 
 ## Integration
 
-The prover lives in forks that pin this shim via cgo flags + the `cuda` build tag:
+The GPU prover lives entirely in the **gnark** fork, behind the `cuda` build tag.
+The **gnark-crypto** fork carries only ~50 lines of nil-default registration
+hooks — no GPU code, no cgo, no dependency on this shim:
 
-- **gnark** fork — `backend/plonk/bls12-381/prove{,_gpu,_nogpu}.go` (mirrored in `integration/`)
-- **gnark-crypto** fork — the `ecc/bls12-381/gpu` seam re-pointed to `libgnark_cuda`
+- `ecc/bls12-381/multiexp.go` — `RegisterGPUMultiExp` + a guarded call site in `G1Jac.MultiExp`
+- `ecc/bls12-381/fr/fft/fft.go` — `RegisterGPUFFT` + guarded call sites in `Domain.FFT` / `FFTInverse`
 
-Build the prover with `-tags cuda` and cgo `LDFLAGS` pointing at `build/` +
-the icicle libs.
+Everything GPU sits in the gnark fork:
+
+- `internal/gpu/bls12381/` — the cgo bindings to `libgnark_cuda`; `gpu.go`
+  carries the `#cgo LDFLAGS` (`-lgnark_cuda -licicle_field_bls12_381
+  -licicle_curve_bls12_381 -licicle_device -lcudart -lstdc++`)
+- `backend/accelerated/cuda/` — the `gpuMultiExp` / `gpuFFT{,Inverse,InverseCoset}`
+  impls; its `init()` installs them via `RegisterGPUMultiExp` / `RegisterGPUFFT`,
+  so importing this package (with `-tags cuda`) transparently routes MSM/FFT to the GPU
+- `backend/plonk/bls12-381/prove{,_gpu,_nogpu}.go` (mirrored in `integration/`) —
+  `prove_gpu.go` holds the device-resident quotient rho-loop; `prove.go` dispatches
+  to it and falls back to the CPU path (`prove_nogpu.go`) without the tag
+
+Downstream, a circuit opts in with a one-line side-effect import under the same
+tag (e.g. the apk fork's `circuits/apk/gpu_register.go`:
+`import _ "github.com/consensys/gnark/backend/accelerated/cuda"`).
+
+Both forks are pinned via `replace` to `github.com/polytope-labs/{gnark,gnark-crypto}`.
+Build with `-tags cuda` and point cgo at this shim + the icicle libs via the env:
+
+```sh
+export CGO_CFLAGS="-I<gnark-cuda>/include"
+export CGO_LDFLAGS="-L<gnark-cuda>/build -L<icicle-install>/lib -L/usr/local/cuda/lib64"
+go build -tags cuda ./...
+```
+
+Without `-tags cuda`, the hooks stay nil and the prover is pure-CPU upstream gnark.
