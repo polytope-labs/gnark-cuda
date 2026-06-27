@@ -163,6 +163,23 @@ done:
     return 0;
 }
 
+// v[i] = g^i  (prefix product of the seed [1, g, g, ...]); no sync.
+int gpu_vec_powers(void* v, const void* d_g, uint32_t n, void* stream) {
+    if (n == 0) return 0;
+    cudaStream_t s = (cudaStream_t)stream;
+    void* tmp = nullptr;
+    size_t tb = 0;
+    cudaError_t err = cudaSuccess;
+    powers_seed_kernel<<<grid(n), kBlock, 0, s>>>((Fr*)v, (const Fr*)d_g, n);
+    if ((err = cub::DeviceScan::InclusiveScan(nullptr, tb, (Fr*)v, (Fr*)v, FrMulOp(), (int)n, s)) != cudaSuccess) goto done;
+    if ((err = cudaMalloc(&tmp, tb)) != cudaSuccess) goto done;
+    if ((err = cub::DeviceScan::InclusiveScan(tmp, tb, (Fr*)v, (Fr*)v, FrMulOp(), (int)n, s)) != cudaSuccess) goto done;
+done:
+    if (tmp) cudaFree(tmp);
+    if (err != cudaSuccess) { fprintf(stderr, "[gpu_vec_powers] %s\n", cudaGetErrorString(err)); return -1; }
+    return 0;
+}
+
 // v[i] = 1/v[i]  (Montgomery batch inversion, parallel pre/suf-product form)
 int gpu_vec_batch_invert(void* v, uint32_t n, void* stream) {
     if (n == 0) return 0;

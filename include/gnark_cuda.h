@@ -131,6 +131,7 @@ int   gpu_vec_addmul(void* v, const void* a, const void* b, uint32_t n, void* st
 int   gpu_vec_add_scalar_mul(void* v, const void* a, const void* d_c, uint32_t n, void* stream);
 int   gpu_vec_set_zero(void* v, uint32_t n, void* stream);
 int   gpu_vec_scale_by_powers(void* v, const void* d_g, uint32_t n, void* stream);
+int   gpu_vec_powers(void* v, const void* d_g, uint32_t n, void* stream);
 int   gpu_vec_batch_invert(void* v, uint32_t n, void* stream);
 
 
