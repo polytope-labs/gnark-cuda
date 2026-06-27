@@ -461,6 +461,53 @@ int gpu_msm(const void* d_points, const void* d_scalars, uint32_t n,
     return 0;                                     // {x_m, y_m, 1_m} = Jacobian of affine
 }
 
+// Size of the icicle homogeneous projective result, so the Go caller can size the
+// host landing buffer for gpu_msm_async / gpu_msm_marshal.
+size_t gpu_msm_proj_bytes(void) { return sizeof(projective_t); }
+
+// gpu_msm_async runs the MSM ASYNCHRONOUSLY on `stream`, writing the raw icicle
+// projective result into the host buffer h_proj (>= gpu_msm_proj_bytes). It does
+// NOT sync and does NOT marshal, so several MSMs issued on distinct streams
+// overlap on the GPU. The caller syncs each stream, then calls gpu_msm_marshal.
+// h_proj and the scalar buffer must stay alive until the sync.
+int gpu_msm_async(const void* d_points, const void* d_scalars, uint32_t n,
+                  void* h_proj, uint32_t window_size, void* stream) {
+    MSMConfig cfg = default_msm_config();
+    cfg.stream = (icicleStreamHandle)stream;
+    cfg.are_scalars_on_device = true;
+    cfg.are_points_on_device = true;
+    cfg.are_results_on_device = false;            // result D2H'd to h_proj (async)
+    cfg.are_scalars_montgomery_form = false;
+    cfg.are_points_montgomery_form = false;
+    if (window_size > 0) cfg.c = (int)window_size;
+    cfg.is_async = true;
+    if (bls12_381_msm(reinterpret_cast<const scalar_t*>(d_scalars),
+                      reinterpret_cast<const affine_t*>(d_points),
+                      (int)n, &cfg, reinterpret_cast<projective_t*>(h_proj)) != eIcicleError::SUCCESS)
+        return -1;
+    return 0;
+}
+
+// gpu_msm_marshal converts a settled icicle projective (from gpu_msm_async, after
+// the stream is synced) into a gnark G1Jac {X,Y,Z fp Montgomery}. Pure host work.
+int gpu_msm_marshal(const void* h_proj, void* h_result) {
+    const projective_t* proj = reinterpret_cast<const projective_t*>(h_proj);
+    uint64_t* out = reinterpret_cast<uint64_t*>(h_result);
+    const uint64_t* pz = reinterpret_cast<const uint64_t*>(proj) + 12;
+    bool is_inf = true;
+    for (int i = 0; i < 6; i++) if (pz[i] != 0) { is_inf = false; break; }
+    if (is_inf) {
+        for (int i = 0; i < 6; i++) { out[i] = FP_ONE_MONT[i]; out[6+i] = FP_ONE_MONT[i]; out[12+i] = 0; }
+        return 0;
+    }
+    affine_t aff; bls12_381_to_affine(const_cast<projective_t*>(proj), &aff);
+    affine_t affM; VecOpsConfig vc = default_vec_ops_config();
+    bls12_381_affine_convert_montgomery(&aff, 1, /*is_into=*/true, &vc, &affM);
+    const uint64_t* axy = reinterpret_cast<const uint64_t*>(&affM);
+    for (int i = 0; i < 6; i++) { out[i] = axy[i]; out[6+i] = axy[6+i]; out[12+i] = FP_ONE_MONT[i]; }
+    return 0;
+}
+
 // --- Bespoke PLONK kernels (api-resident; ported from HIP) -------------------
 
 __global__ void plonk_scatter_result_kernel(const Fr* src, Fr* dst, uint32_t n, uint32_t rho,

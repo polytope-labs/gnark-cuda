@@ -45,7 +45,9 @@ endif()
 add_library(gnark_cuda SHARED
   src/plonk.cu
   src/ratio.cu
+    src/kzg.cu
   src/vecops.cu
+  src/frvec.cu
   src/api.cu            # icicle-delegation layer + api-resident bespoke kernels
 )
 
