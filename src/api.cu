@@ -672,6 +672,23 @@ cleanup:
     return 0;
 }
 
+// Async, no-alloc, no-sync variant of gpu_poly_eval: the caller supplies scratch
+// (d_partials of EVAL_CHUNKS Fr, d_point_power of 1 Fr) and a device d_result, and
+// syncs the stream once after issuing a whole batch. d_partials/d_point_power may be
+// reused across the batch since the kernels serialize on the stream.
+int gpu_poly_eval_async(const void* d_coeffs, uint32_t n, const void* d_point,
+                        void* d_partials, void* d_point_power, void* d_result, void* stream) {
+    cudaStream_t s = (cudaStream_t)stream;
+    const uint32_t NUM_CHUNKS = EVAL_CHUNKS;
+    uint32_t chunk_size = (n + NUM_CHUNKS - 1) / NUM_CHUNKS;
+    uint32_t actual_chunks = (n + chunk_size - 1) / chunk_size;
+    poly_eval_phase1_kernel<<<1, NUM_CHUNKS, 0, s>>>(
+        (const Fr*)d_coeffs, (const Fr*)d_point, (Fr*)d_partials, (Fr*)d_point_power, n, chunk_size);
+    poly_eval_phase2_kernel<<<1, 1, 0, s>>>(
+        (Fr*)d_partials, (Fr*)d_point_power, (Fr*)d_result, actual_chunks);
+    return cudaGetLastError() == cudaSuccess ? 0 : -1;
+}
+
 // --- Linearized polynomial ---------------------------------------------------
 
 int gpu_plonk_linearized_poly(
